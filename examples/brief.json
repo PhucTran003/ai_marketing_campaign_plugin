@@ -1,0 +1,12 @@
+{
+  "brand": "Bean & Brew",
+  "product": "New matcha latte",
+  "audience": "University students aged 18–25 in Ho Chi Minh City",
+  "goal": "awareness",
+  "budgetVnd": 3000000,
+  "durationDays": 14,
+  "channels": ["instagram", "tiktok"],
+  "differentiator": "Made fresh with customizable sweetness",
+  "voice": "Friendly, energetic, honest",
+  "constraints": ["Do not invent discounts", "Do not make health claims"]
+}
