@@ -1,8 +1,8 @@
-# CampaignPilot implementation notes (sections 3–7)
+# CampaignPilot implementation notes (sections 3–9)
 
-Implemented the guide's MVP, tests, and V1 load/revision workflow. Pi owns model access and conversation;
+Implemented the guide's MVP, tests, V1 load/revision workflow, and V2 scoring/CSV export. Pi owns model access and conversation;
 the extension validates and exports campaigns locally. There is no separate model
-client, web UI, publishing integration, scoring, or CSV export.
+client, web UI, or publishing integration.
 
 ## Files
 
@@ -15,8 +15,10 @@ client, web UI, publishing integration, scoring, or CSV export.
 | `src/schema.ts` | Zod schemas and inferred `Brief` / `Campaign` types, with field bounds and unique selected channels. |
 | `src/checks.ts` | `validateCampaign` parses untrusted input and rejects duplicate post IDs, invalid channel choices, bad calendar references/days, and incorrect budget totals. |
 | `src/render.ts` | `renderMarkdown` exports the brief, strategy, content, calendar, budget, proposed KPIs, and human review notes. |
-| `src/storage.ts` | `saveCampaign` validates before writing and creates UUID directories containing exclusive JSON and Markdown files. `loadCampaign` validates IDs and revalidates persisted campaigns. |
-| `.pi/extensions/campaignpilot.ts` | Registers `/campaign`, `campaign_save`, `campaign_load`, and `campaign_revise`. Revision responses show the new ID and a short diff, with instructions to seek human approval before use. |
+| `src/storage.ts` | `saveCampaign` validates before writing and creates UUID directories containing exclusive JSON, Markdown, and CSV files. `loadCampaign` validates IDs and revalidates persisted campaigns. |
+| `.pi/extensions/campaignpilot.ts` | Registers `/campaign`, `campaign_save`, `campaign_load`, `campaign_revise`, and `campaign_review`. Revision responses show the new ID and a short diff, with instructions to seek human approval before use. Review validates saved data before scoring. |
+| `src/review.ts` | Pure deterministic quality heuristic from section 8; returns a score clamped at zero and warning/info findings. It does not infer marketing performance or verify claims. |
+| `src/csv.ts` | Pure calendar export from section 9, with CRLF rows, quoted cells, escaped quotes, and apostrophe-prefix protection for formula operators after optional whitespace. |
 | `src/tool-input.ts` | Generates nested campaign schemas from Zod; defines ID-based load/revision parameters and preserves the JSON-string compatibility hook for both saves and revisions. |
 | `src/revisions.ts` | Validates one-section revisions, preserves the brief and assumptions, saves a new campaign with exclusive `revision.json` metadata, and produces a bounded field-level before/after diff. |
 | `src/load-preview.ts` | Returns validated JSON using Pi's `truncateHead`, capped at 20,000 bytes or 500 lines. Marks truncation and identifies the full file without copying it into tool details. |
@@ -26,13 +28,16 @@ client, web UI, publishing integration, scoring, or CSV export.
 | `tests/storage.test.ts` | Temporary-directory tests for JSON/Markdown export, persisted loading, separate saves without overwrites, invalid-input rejection before writes, unsafe ID rejection, and validation on load. |
 | `tests/revisions.test.ts` | Covers all five editable sections, byte-for-byte parent preservation, revision metadata and chains, unchanged brief/assumptions/unrelated sections, calendar dependencies, safe parent IDs, and bounded diffs. |
 | `tests/v1-tools.test.ts` | Checks revision parameters with Pi's argument validator, JSON-string compatibility, uneditable sections, ID-only inputs, complete/truncated load previews, and path rejection. |
+| `tests/review.test.ts` | Pure tests for each scoring rule, thresholds, cumulative penalties, the zero floor, repeatability, and input preservation. |
+| `tests/csv.test.ts` | Pure tests for exact CSV rows, quotes/commas/newlines, formula injection and leading whitespace, Unicode text, calendar ordering/repeated references, missing posts, and input preservation. |
 | `examples/brief.json` | The guide's Bean & Brew sample brief. |
 | `tests/.gitkeep` | Original scaffold placeholder; the directory now contains the test suite. |
 | `README.md` | Local installation, typecheck, and Pi usage instructions with explicit scope and verification limits. |
 | `IMPLEMENTATION_NOTES.md` | This file: implementation explanations, API comparison, and verification record. |
 
 The ignored `campaigns/` directory exists locally and is also created on demand by
-`saveCampaign`. V2's `review.ts` and `csv.ts` are deliberately absent.
+`saveCampaign`. New campaigns and revisions contain `calendar.csv`; older campaign
+directories are not modified automatically.
 
 ## Installed Pi API compared with the guide
 
@@ -89,16 +94,37 @@ configuration or model change is required for this compatibility fix.
   excerpts and an omitted-change count. Human approval is conversational and is
   requested after saving a draft; there is no publishing or approval-state tool.
 
+## V2 behavior and differences from the guide
+
+- `reviewCampaign` and `calendarCsv` implement the guide's pure functions. Their
+  27 unit tests passed before any storage or Pi wiring was added, as Prompt 4
+  requires. No dependencies or provider configuration changes were needed.
+- `campaign_review` takes the same ID-only schema as `campaign_load`, loads and
+  validates the saved campaign, then applies the deterministic rubric. Invalid
+  schema/domain data fails without a score. No filesystem path is accepted.
+- The review is read-only and does not save a score or alter campaign files. Tool
+  text explicitly states that the score is not a performance prediction or
+  publishing approval. Optional model commentary on brand voice, claims, audience,
+  or platform fit must explain uncertainty and stay separate from the score.
+- CSV export runs automatically through `saveCampaign` after validation, so new
+  revisions also export their updated calendar without touching the parent CSV.
+  There is no redundant CSV tool or retroactive export into historical folders.
+- Formula protection affects only CSV cells; JSON and Markdown preserve original
+  content. Calendar days remain offsets rather than invented publication dates.
+
 ## Verification
 
 - `npm run typecheck`: **passed**, no TypeScript errors.
 - `git diff --check`: **passed**.
 - Pi's installed `discoverAndLoadExtensions` loaded the actual TypeScript
   extension successfully with an isolated temporary agent directory; `/campaign`
-  and all three campaign tools were registered. No provider call was made.
-- `npm test`: **60 tests passed across 5 files**: 10 campaign validation tests,
-  13 storage tests, 8 tool argument regression tests, 20 revision tests, and
-  9 V1 tool input/preview tests. Storage tests use
+  and all four campaign tools were registered. An offline smoke check invoked
+  the actual save/revise/review handlers, confirmed CSV creation and parent
+  preservation, and checked rejection of unsafe IDs and invalid budgets before
+  review. No provider call was made.
+- `npm test`: **88 tests passed across 7 files**: 10 campaign validation tests,
+  14 storage tests, 8 tool argument regression tests, 20 revision tests,
+  9 V1 tool input/preview tests, 11 quality review tests, and 16 CSV tests. Storage tests use
   isolated temporary directories and remove them after each test.
 - The existing tool argument tests exercise Pi's installed `validateToolArguments`
   validator. No casts or type suppressions were added.
@@ -132,8 +158,18 @@ For the new V1 tools (not yet tested with a live model):
 5. For a large campaign, confirm Pi reads the complete file after receiving a
    truncated preview before revising it.
 
+For V2 (registered handlers verified offline; live model use still to check):
+
+1. Restart Pi and ask `campaign_review` to review a saved campaign by ID. Confirm
+   it explains the heuristic findings without promising results.
+2. Save a campaign or a new revision and inspect `calendar.csv` in that new folder.
+   Import it into your spreadsheet application and verify multiline cells,
+   Vietnamese text, and day offsets. Formula-like text must be treated as text.
+3. Revise only the calendar, then confirm the new CSV matches the revision and the
+   original CSV remains unchanged. Historical campaigns may have no CSV.
+
 Storage retains the guide's local MVP limitations: it does not protect against
 symlinked campaign directories or make output writes atomic. A failed write can
 leave an incomplete new directory, including a campaign without revision metadata;
 it does not update the parent. Those production-hardening changes remain outside
-the guide's V1 implementation. V2 scoring and CSV export are not implemented.
+the scope of Prompt 4. Portfolio hardening and CI from section 10 are not implemented.

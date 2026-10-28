@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { saveCampaign } from "../../src/storage.js";
+import { loadCampaign, saveCampaign } from "../../src/storage.js";
+import { reviewCampaign } from "../../src/review.js";
 import { loadCampaignPreview } from "../../src/load-preview.js";
 import { RevisionInfoSchema, saveRevision } from "../../src/revisions.js";
 import { SaveInput, LoadInput, ReviseInput, prepareSaveArguments, prepareRevisionArguments } from "../../src/tool-input.js";
@@ -50,6 +51,12 @@ and unrelated sections. Revised posts must preserve calendar-referenced IDs
 and channel assignments. Schedule changes require a separate calendar revision.
 Show the returned diff and new ID and ask the user to approve the draft for use.
 Never overwrite the original or use campaign_save to bypass revision checks.
+
+Saves and revisions also export calendar.csv with day offsets, not launch dates.
+Use campaign_review with a saved ID for deterministic quality heuristics. Its
+score is not a performance prediction or approval to publish. For a qualitative
+review of brand voice, factual claims, or platform fit, explain uncertainty and
+keep that commentary separate from the deterministic score.
 `;
 
 export default function (pi: ExtensionAPI) {
@@ -65,13 +72,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "campaign_save",
     label: "Save Campaign",
-    description: "Validate a complete marketing campaign and export JSON + Markdown under the current project's campaigns directory.",
+    description: "Validate a complete marketing campaign and export JSON, Markdown, and calendar CSV under the current project's campaigns directory.",
     parameters: SaveInput,
     prepareArguments: prepareSaveArguments,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const result = await saveCampaign(ctx.cwd, params.campaign);
       return {
-        content: [{ type: "text", text: `Saved campaign ${result.id} to ${result.folder} (campaign.json, campaign.md)` }],
+        content: [{ type: "text", text: `Saved campaign ${result.id} to ${result.folder} (campaign.json, campaign.md, calendar.csv)` }],
         details: { id: result.id, folder: result.folder },
       };
     },
@@ -101,8 +108,23 @@ export default function (pi: ExtensionAPI) {
       const info = RevisionInfoSchema.parse(params);
       const result = await saveRevision(ctx.cwd, info.parentId, info.section, params.campaign, info.reason);
       return {
-        content: [{ type: "text", text: `Saved draft revision ${result.id} of ${result.metadata.parentId} to ${result.folder} (campaign.json, campaign.md, revision.json).\nReason: ${result.metadata.reason}\n${result.summary}\nHuman review required: show this diff and ask the user to approve this draft before using it. The parent is unchanged.` }],
+        content: [{ type: "text", text: `Saved draft revision ${result.id} of ${result.metadata.parentId} to ${result.folder} (campaign.json, campaign.md, calendar.csv, revision.json).\nReason: ${result.metadata.reason}\n${result.summary}\nHuman review required: show this diff and ask the user to approve this draft before using it. The parent is unchanged.` }],
         details: { id: result.id, folder: result.folder, parentId: result.metadata.parentId, section: result.metadata.section, summary: result.summary },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "campaign_review",
+    label: "Review Campaign",
+    description: "Validate a saved campaign by ID and return deterministic quality findings and a heuristic score. This does not predict marketing performance, verify factual claims, or approve publication.",
+    parameters: LoadInput,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const campaign = await loadCampaign(ctx.cwd, params.id);
+      const review = reviewCampaign(campaign);
+      return {
+        content: [{ type: "text", text: `Campaign ${params.id} passed schema and domain validation.\nHeuristic quality score: ${review.score}/100. This is not a performance prediction or publishing approval.\n${JSON.stringify(review, null, 2)}` }],
+        details: { id: params.id, ...review },
       };
     },
   });

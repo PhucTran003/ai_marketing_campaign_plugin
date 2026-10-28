@@ -6,6 +6,7 @@ import { saveRevision, SectionSchema, type Section } from "../src/revisions.js";
 import type { Campaign } from "../src/schema.js";
 import { campaignRoot, loadCampaign, saveCampaign } from "../src/storage.js";
 import { sampleCampaign } from "./fixtures/campaign.js";
+import { calendarCsv } from "../src/csv.js";
 
 function changeSection(campaign: Campaign, section: Section) {
   switch (section) {
@@ -39,11 +40,13 @@ describe("immutable campaign revisions", () => {
   it.each(SectionSchema.options)("revises %s without altering original files or unrelated data", async (section) => {
     const originalJson = await readFile(path.join(parentFolder, "campaign.json"), "utf8");
     const originalMarkdown = await readFile(path.join(parentFolder, "campaign.md"), "utf8");
+    const originalCsv = await readFile(path.join(parentFolder, "calendar.csv"), "utf8");
     const revised = sampleCampaign();
     changeSection(revised, section);
     const saved = await saveRevision(cwd, parentId, section, revised, "  Requested update  ");
     expect(saved.id).not.toBe(parentId);
     expect(await loadCampaign(cwd, saved.id)).toEqual(revised);
+    expect(await readFile(path.join(saved.folder, "calendar.csv"), "utf8")).toBe(calendarCsv(revised));
     expect(saved.metadata).toEqual({ parentId, section, reason: "Requested update", createdAt: expect.any(String) });
     expect(Number.isNaN(Date.parse(saved.metadata.createdAt))).toBe(false);
     expect(JSON.parse(await readFile(path.join(saved.folder, "revision.json"), "utf8"))).toEqual(saved.metadata);
@@ -51,7 +54,8 @@ describe("immutable campaign revisions", () => {
     expect(saved.summary).toContain("→");
     expect(await readFile(path.join(parentFolder, "campaign.json"), "utf8")).toBe(originalJson);
     expect(await readFile(path.join(parentFolder, "campaign.md"), "utf8")).toBe(originalMarkdown);
-    expect((await readdir(parentFolder)).sort()).toEqual(["campaign.json", "campaign.md"]);
+    expect(await readFile(path.join(parentFolder, "calendar.csv"), "utf8")).toBe(originalCsv);
+    expect((await readdir(parentFolder)).sort()).toEqual(["calendar.csv", "campaign.json", "campaign.md"]);
   });
 
   it("rejects changing the brief before creating a revision directory", async () => {
@@ -121,7 +125,7 @@ describe("immutable campaign revisions", () => {
     const firstCampaign = sampleCampaign();
     changeSection(firstCampaign, "strategy");
     const first = await saveRevision(cwd, parentId, "strategy", firstCampaign, "First revision");
-    const originals = await Promise.all(["campaign.json", "campaign.md", "revision.json"].map(
+    const originals = await Promise.all(["campaign.json", "campaign.md", "calendar.csv", "revision.json"].map(
       (filename) => readFile(path.join(first.folder, filename), "utf8"),
     ));
     const nextCampaign = structuredClone(firstCampaign);
@@ -130,7 +134,7 @@ describe("immutable campaign revisions", () => {
     expect(next.id).not.toBe(first.id);
     expect(next.metadata.parentId).toBe(first.id);
     expect(await loadCampaign(cwd, next.id)).toEqual(nextCampaign);
-    expect(await Promise.all(["campaign.json", "campaign.md", "revision.json"].map(
+    expect(await Promise.all(["campaign.json", "campaign.md", "calendar.csv", "revision.json"].map(
       (filename) => readFile(path.join(first.folder, filename), "utf8"),
     ))).toEqual(originals);
     expect(await loadCampaign(cwd, parentId)).toEqual(sampleCampaign());
