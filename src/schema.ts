@@ -15,7 +15,7 @@ export const BriefSchema = z.object({
   ),
   differentiator: z.string().trim().min(3).max(500),
   voice: z.string().trim().min(2).max(150),
-  constraints: z.array(z.string().max(300)).default([]),
+  constraints: z.array(z.string().max(300)).max(50).default([]),
 });
 
 export const PostSchema = z.object({
@@ -38,7 +38,7 @@ export const CampaignSchema = z.object({
   posts: z.array(PostSchema).min(1).max(100),
   calendar: z.array(z.object({
     day: z.number().int().min(1).max(90),
-    postId: z.string(),
+    postId: z.string().regex(/^[a-z0-9-]{1,60}$/),
     channel: Channel,
   })).min(1).max(200),
   budget: z.array(z.object({
@@ -51,7 +51,7 @@ export const CampaignSchema = z.object({
     target: z.string().min(1).max(120),
     measurement: z.string().min(3).max(400),
   })).min(1).max(15),
-  assumptions: z.array(z.string().max(500)).default([]),
+  assumptions: z.array(z.string().max(500)).max(100).default([]),
 });
 
 export type Brief = z.infer<typeof BriefSchema>;

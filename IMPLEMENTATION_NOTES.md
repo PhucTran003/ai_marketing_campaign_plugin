@@ -1,6 +1,7 @@
-# CampaignPilot implementation notes (sections 3–9)
+# CampaignPilot implementation notes
 
-Implemented the guide's MVP, tests, V1 load/revision workflow, and V2 scoring/CSV export. Pi owns model access and conversation;
+CampaignPilot includes campaign planning, tests, immutable revisions, quality review,
+and CSV export. Pi owns model access and conversation;
 the extension validates and exports campaigns locally. There is no separate model
 client, web UI, or publishing integration.
 
@@ -8,29 +9,29 @@ client, web UI, or publishing integration.
 
 | File | Purpose |
 | --- | --- |
-| `package.json` | ESM package with the guide's `dev`, `test`, and `typecheck` scripts; dependencies resolved by npm rather than copied version pins. Pi is installed locally as a development dependency. |
+| `package.json` | ESM package with development, test, typecheck, and offline demo scripts; dependencies resolved by npm rather than copied version pins. Pi is installed locally as a development dependency. |
 | `package-lock.json` | Records the dependency versions for reproducible installation with `npm ci`. |
 | `tsconfig.json` | Strict ES2022 / NodeNext checking of source, future tests, and the Pi extension. No JavaScript is emitted. |
 | `.gitignore` | Preserves existing rules and adds generated `campaigns/` and macOS `.DS_Store` exclusions; dependencies and environment files were already ignored. |
 | `src/schema.ts` | Zod schemas and inferred `Brief` / `Campaign` types, with field bounds and unique selected channels. |
 | `src/checks.ts` | `validateCampaign` parses untrusted input and rejects duplicate post IDs, invalid channel choices, bad calendar references/days, and incorrect budget totals. |
 | `src/render.ts` | `renderMarkdown` exports the brief, strategy, content, calendar, budget, proposed KPIs, and human review notes. |
-| `src/storage.ts` | `saveCampaign` validates before writing and creates UUID directories containing exclusive JSON, Markdown, and CSV files. `loadCampaign` validates IDs and revalidates persisted campaigns. |
+| `src/storage.ts` | `saveCampaign` validates before writing, reserves a UUID, stages and syncs the full export bundle, and publishes it by directory rename. Loads reject symlinks and use bounded reads. `loadCampaign` validates IDs and revalidates persisted campaigns. |
 | `.pi/extensions/campaignpilot.ts` | Registers `/campaign`, `campaign_save`, `campaign_load`, `campaign_revise`, and `campaign_review`. Revision responses show the new ID and a short diff, with instructions to seek human approval before use. Review validates saved data before scoring. |
-| `src/review.ts` | Pure deterministic quality heuristic from section 8; returns a score clamped at zero and warning/info findings. It does not infer marketing performance or verify claims. |
-| `src/csv.ts` | Pure calendar export from section 9, with CRLF rows, quoted cells, escaped quotes, and apostrophe-prefix protection for formula operators after optional whitespace. |
+| `src/review.ts` | Pure deterministic quality heuristic; returns a score clamped at zero and warning/info findings. It does not infer marketing performance or verify claims. |
+| `src/csv.ts` | Pure calendar export, with CRLF rows, quoted cells, escaped quotes, and apostrophe-prefix protection for formula operators after optional whitespace. |
 | `src/tool-input.ts` | Generates nested campaign schemas from Zod; defines ID-based load/revision parameters and preserves the JSON-string compatibility hook for both saves and revisions. |
 | `src/revisions.ts` | Validates one-section revisions, preserves the brief and assumptions, saves a new campaign with exclusive `revision.json` metadata, and produces a bounded field-level before/after diff. |
 | `src/load-preview.ts` | Returns validated JSON using Pi's `truncateHead`, capped at 20,000 bytes or 500 lines. Marks truncation and identifies the full file without copying it into tool details. |
 | `tests/tool-input.test.ts` | Focused regression tests for native objects, JSON-string arguments, malformed/non-object/double-encoded JSON, Pi schema validation, successful exports, and rejection without writes. |
 | `tests/fixtures/campaign.ts` | A fresh, typed sample campaign for each validation/storage test; no casts are needed to construct invalid input passed to the validator. |
-| `tests/checks.test.ts` | The section 5 cases plus duplicate IDs, unsupported/unselected channels, calendar channel mismatches, and duplicate budget channels. |
+| `tests/checks.test.ts` | Campaign validation tests covering valid inputs, budget totals, calendar references, duration, duplicate IDs, unsupported/unselected channels, calendar channel mismatches, and duplicate budget channels. |
 | `tests/storage.test.ts` | Temporary-directory tests for JSON/Markdown export, persisted loading, separate saves without overwrites, invalid-input rejection before writes, unsafe ID rejection, and validation on load. |
 | `tests/revisions.test.ts` | Covers all five editable sections, byte-for-byte parent preservation, revision metadata and chains, unchanged brief/assumptions/unrelated sections, calendar dependencies, safe parent IDs, and bounded diffs. |
 | `tests/v1-tools.test.ts` | Checks revision parameters with Pi's argument validator, JSON-string compatibility, uneditable sections, ID-only inputs, complete/truncated load previews, and path rejection. |
 | `tests/review.test.ts` | Pure tests for each scoring rule, thresholds, cumulative penalties, the zero floor, repeatability, and input preservation. |
 | `tests/csv.test.ts` | Pure tests for exact CSV rows, quotes/commas/newlines, formula injection and leading whitespace, Unicode text, calendar ordering/repeated references, missing posts, and input preservation. |
-| `examples/brief.json` | The guide's Bean & Brew sample brief. |
+| `examples/brief.json` | Fictional Bean & Brew sample brief. |
 | `tests/.gitkeep` | Original scaffold placeholder; the directory now contains the test suite. |
 | `README.md` | Local installation, typecheck, and Pi usage instructions with explicit scope and verification limits. |
 | `IMPLEMENTATION_NOTES.md` | This file: implementation explanations, API comparison, and verification record. |
@@ -39,27 +40,27 @@ The ignored `campaigns/` directory exists locally and is also created on demand 
 `saveCampaign`. New campaigns and revisions contain `calendar.csv`; older campaign
 directories are not modified automatically.
 
-## Installed Pi API compared with the guide
+## Installed Pi API and compatibility
 
 Verified against `@earendil-works/pi-coding-agent` **1.4.0**, specifically
 `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts`:
 
-- `ExtensionAPI`, `registerCommand`, and `registerTool` support the guide's usage.
+- `ExtensionAPI`, `registerCommand`, and `registerTool` provide the command and tool registration interfaces.
 - `ToolDefinition.execute` still takes five arguments: tool-call ID, inferred
   parameters, optional abort signal, optional update callback, and context. The
   current context type is `ExtensionToolContext`, which supplies `cwd`.
 - `sendUserMessage` accepts a string and returns `void`; its optional settings
-  include `deliverAs` and `expandPromptTemplates`. The guide's single-string call
-  requires no change.
+  include `deliverAs` and `expandPromptTemplates`. The planner sends a single
+  instruction string through this API.
 - Pi's declarations import `TSchema` and `Static` from the newer `typebox` package.
-  The guide imports `Type` from `@sinclair/typebox` (installed version **0.34.52**).
-  The supplied object/any schema satisfies the installed Pi types, so the guide's
-  import is retained. This is compile-time verification, not a claim of a complete
-  provider/tool-call integration test.
+  The adapter imports `Type` from `@sinclair/typebox` (installed version
+  **0.34.52**). The tool schemas satisfy the installed Pi types and are exercised
+  with Pi's argument validator in tests. This does not establish complete
+  provider/tool-call compatibility for every model.
 
 The initial scaffold needed no adapter changes. A real Nemotron interaction then
 exposed a tool-call compatibility issue: it repeatedly supplied `campaign` as a
-JSON string. The guide's `Type.Any` accepted it, and Zod correctly rejected it
+JSON string. The original permissive `Type.Any` parameter accepted it, and Zod correctly rejected it
 because a campaign must be an object.
 
 The adapter now exposes a full JSON Schema generated with Zod's `toJSONSchema`
@@ -73,7 +74,7 @@ Channel uniqueness and cross-field invariants remain in runtime validation.
 The planner instructions explicitly request a nested object. No provider
 configuration or model change is required for this compatibility fix.
 
-## V1 behavior and differences from the guide
+## Loading and immutable revisions
 
 - The same installed Pi 1.4.0 `registerTool` / `execute` API handles both new tools.
   Revision metadata is parsed with Zod in the handler, providing a checked section
@@ -82,11 +83,12 @@ configuration or model change is required for this compatibility fix.
   `campaign_revise` additionally takes `section`, `reason`, and the full campaign.
 - `saveRevision` validates the parent, candidate, and unchanged fields before
   creating files. Each successful revision uses a new UUID directory, preserving
-  the parent, and writes `revision.json` with `parentId`, `section`, trimmed
-  nonempty `reason`, and ISO `createdAt`. Metadata uses exclusive `wx` writes.
-- Unlike the starter snippet, assumptions are also protected as an unrelated
-  top-level section. Deep equality checks compare parsed data rather than object
-  key order. Post/calendar dependencies follow the guide's strict V1 rule.
+  the parent, and includes `revision.json` with `parentId`, `section`, trimmed
+  nonempty `reason`, and ISO `createdAt` in the same staged bundle. Metadata and
+  exports use exclusive writes before publication.
+- Assumptions are protected as an unrelated top-level campaign field. Deep equality checks compare parsed data rather than object
+  key order. Post revisions must preserve IDs and channels referenced by the
+  unchanged calendar; scheduling changes require a separate calendar revision.
 - Load output is bounded using Pi's installed `truncateHead` API. Full validated
   JSON stays on disk. A truncated preview explicitly warns the model to read the
   complete file before preparing a revision.
@@ -94,11 +96,11 @@ configuration or model change is required for this compatibility fix.
   excerpts and an omitted-change count. Human approval is conversational and is
   requested after saving a draft; there is no publishing or approval-state tool.
 
-## V2 behavior and differences from the guide
+## Quality review and CSV export
 
-- `reviewCampaign` and `calendarCsv` implement the guide's pure functions. Their
-  27 unit tests passed before any storage or Pi wiring was added, as Prompt 4
-  requires. No dependencies or provider configuration changes were needed.
+- `reviewCampaign` and `calendarCsv` are pure functions. Their 27 unit tests
+  passed before storage and Pi integration were added. No additional dependencies
+  or provider configuration changes were needed.
 - `campaign_review` takes the same ID-only schema as `campaign_load`, loads and
   validates the saved campaign, then applies the deterministic rubric. Invalid
   schema/domain data fails without a score. No filesystem path is accepted.
@@ -122,9 +124,8 @@ configuration or model change is required for this compatibility fix.
   the actual save/revise/review handlers, confirmed CSV creation and parent
   preservation, and checked rejection of unsafe IDs and invalid budgets before
   review. No provider call was made.
-- `npm test`: **88 tests passed across 7 files**: 10 campaign validation tests,
-  14 storage tests, 8 tool argument regression tests, 20 revision tests,
-  9 V1 tool input/preview tests, 11 quality review tests, and 16 CSV tests. Storage tests use
+- `npm test`: **106 tests passed across 10 files**: the original 88 tests plus 12 storage
+  hardening tests, 5 schema/input-limit tests, and 1 actual extension-loading test. Storage tests use
   isolated temporary directories and remove them after each test.
 - The existing tool argument tests exercise Pi's installed `validateToolArguments`
   validator. No casts or type suppressions were added.
@@ -133,8 +134,8 @@ configuration or model change is required for this compatibility fix.
 
 ## Remaining manual integration checks
 
-The successful generation is already user-confirmed. To complete section 5's
-integration checklist in Pi:
+Successful generation is already user-confirmed. Remaining campaign workflow
+checks in Pi:
 
 1. Inspect both saved files for complete strategy, posts, calendar, budget, KPIs,
    and review notes; confirm factual claims and proposed targets are appropriate.
@@ -145,7 +146,7 @@ integration checklist in Pi:
    remain unchanged.
 5. Exit and restart Pi, then confirm the saved JSON and Markdown remain on disk.
 
-For the new V1 tools (not yet tested with a live model):
+For loading and revision tools (not yet tested with a live model):
 
 1. Restart Pi to load the updated extension. Ask `campaign_load` to summarize an
    existing campaign by its ID.
@@ -158,7 +159,8 @@ For the new V1 tools (not yet tested with a live model):
 5. For a large campaign, confirm Pi reads the complete file after receiving a
    truncated preview before revising it.
 
-For V2 (registered handlers verified offline; live model use still to check):
+For quality review and CSV export (registered handlers verified offline; live
+model use still to check):
 
 1. Restart Pi and ask `campaign_review` to review a saved campaign by ID. Confirm
    it explains the heuristic findings without promising results.
@@ -168,8 +170,36 @@ For V2 (registered handlers verified offline; live model use still to check):
 3. Revise only the calendar, then confirm the new CSV matches the revision and the
    original CSV remains unchanged. Historical campaigns may have no CSV.
 
-Storage retains the guide's local MVP limitations: it does not protect against
-symlinked campaign directories or make output writes atomic. A failed write can
-leave an incomplete new directory, including a campaign without revision metadata;
-it does not update the parent. Those production-hardening changes remain outside
-the scope of Prompt 4. Portfolio hardening and CI from section 10 are not implemented.
+## Audit and hardening
+
+`AUDIT.md` records priorities, fixes, evidence, and residual risks. Storage now
+rejects stable symlinked components and opens regular JSON files without following
+symlinks. Payloads/JSON are capped at 2 MiB, collection sizes are bounded, and
+calendar post references use the same safe shape as post IDs. Handled I/O failures
+clean up hidden staging and reservation directories. A complete revision bundle,
+including metadata, is published by one rename; cooperating writers reserve IDs
+exclusively. This does not claim protection against hostile same-user races or
+power-loss durability.
+
+The npm dependency tree is patched with Undici 8.12.2 and has zero known audit
+advisories at verification time. Pi and `pi-ai` are pinned at 1.4.0; the latter is
+now a direct development dependency for tests. Node typings target Node 22.
+Because Pi's bundled CLI embeds Undici, `npm run dev` now launches its shipped
+unbundled `dist/cli.js` so the patched tree applies. Recheck this internal path on
+Pi upgrades; external/global Pi installations are not patched by this project.
+
+Additional files:
+
+- `src/limits.ts`: shared JSON payload size checks.
+- `tests/storage-hardening.test.ts`: symlinks, regular-file/size checks, failed
+  writes/publication, concurrency, and collision regressions.
+- `tests/schema-limits.test.ts`: bounded arrays/references/payloads and malformed inputs.
+- `tests/extension.test.ts`: actual Pi loader and registered tool contracts.
+- `scripts/demo.ts`: executable offline fixture demo, included in typecheck.
+- `DEMO.md`: verified offline and optional live walkthrough, with defensible CV bullets.
+- `AUDIT.md`: prioritized audit and verification record.
+
+The rewritten README has no link to the missing OpenRouter setup file and includes
+setup, auth location, tool behavior, architecture, and current limitations. A clean
+lockfile install with lifecycle scripts disabled passed tests and typecheck.
+CI, package publication, and a fresh live-provider audit run are not claimed.

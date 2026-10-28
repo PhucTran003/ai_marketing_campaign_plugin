@@ -1,9 +1,8 @@
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { validateCampaign } from "./checks.js";
 import { loadCampaign, saveCampaign } from "./storage.js";
+import { assertPayloadSize } from "./limits.js";
 
 export const SectionSchema = z.enum(["strategy", "posts", "calendar", "budget", "kpis"]);
 export type Section = z.infer<typeof SectionSchema>;
@@ -12,6 +11,7 @@ export const RevisionInfoSchema = z.object({
   section: SectionSchema,
   reason: z.string().trim().min(1).max(1000),
 });
+export type RevisionMetadata = z.infer<typeof RevisionInfoSchema> & { createdAt: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,6 +49,7 @@ function summarizeChanges(before: unknown, after: unknown, section: Section): st
 export async function saveRevision(
   cwd: string, parentId: string, section: Section, input: unknown, reason: string,
 ) {
+  assertPayloadSize(input);
   const info = RevisionInfoSchema.parse({ parentId, section, reason });
   const before = await loadCampaign(cwd, info.parentId);
   const after = validateCampaign(input);
@@ -64,10 +65,7 @@ export async function saveRevision(
     }
   }
   const summary = summarizeChanges(before[info.section], after[info.section], info.section);
-  const saved = await saveCampaign(cwd, after);
   const metadata = { ...info, createdAt: new Date().toISOString() };
-  await writeFile(path.join(saved.folder, "revision.json"), JSON.stringify(metadata, null, 2) + "\n", {
-    encoding: "utf8", flag: "wx",
-  });
+  const saved = await saveCampaign(cwd, after, metadata);
   return { ...saved, metadata, summary };
 }

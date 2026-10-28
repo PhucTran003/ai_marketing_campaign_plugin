@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { z } from "zod";
 import { CampaignSchema } from "./schema.js";
 import { RevisionInfoSchema } from "./revisions.js";
+import { assertPayloadSize } from "./limits.js";
 
 // Generate model guidance from the same schema used for runtime validation.
 // Keep external data unknown until validation; no campaign type is asserted here.
@@ -15,6 +16,7 @@ export const SaveInput = Type.Object({
 const SaveEnvelope = z.object({ campaign: z.unknown() });
 
 export function prepareSaveArguments(input: unknown): { campaign: unknown } {
+  assertPayloadSize(input);
   const params = SaveEnvelope.parse(input);
   let campaign: unknown = params.campaign;
   if (typeof campaign === "string") {
